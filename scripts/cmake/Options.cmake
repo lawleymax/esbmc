@@ -22,7 +22,7 @@ option(BUILD_DOC "Build ESBMC documentation" OFF)
 option(ENABLE_REGRESSION "Add Regressions Tests (default: OFF)" OFF)
 option(ENABLE_COVERAGE "Generate Coverage Report (default: OFF)" OFF)
 option(ENABLE_OLD_FRONTEND "Enable flex/bison language frontend (default: OFF)" OFF)
-option(ENABLE_SOLIDITY_FRONTEND "Enable Solidity language frontend (default: OFF)" OFF)
+option(ENABLE_SOLIDITY_FRONTEND "Enable Solidity language frontend (default: OFF)" ON)
 option(ENABLE_GOTO_CONTRACTOR "Enable IBEX in the build (default: OFF)" OFF)
 option(ENABLE_JIMPLE_FRONTEND "Enable Jimple language frontend (default: OFF)" OFF)
 
