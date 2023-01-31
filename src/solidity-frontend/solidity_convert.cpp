@@ -9,6 +9,7 @@
 #include <util/std_code.h>
 #include <util/std_expr.h>
 #include <regex>
+#include <iostream>
 
 #include <fstream>
 
@@ -131,17 +132,20 @@ bool solidity_convertert::get_decl(
 
   // based on each element as in Solidty grammar "rule contract-body-element"
   switch(type)
-  {
+  {  
   case SolidityGrammar::ContractBodyElementT::StateVarDecl:
   {
+    std::cout << "1!" << std::endl;
     return get_var_decl(ast_node, new_expr); // rule state-variable-declaration
   }
   case SolidityGrammar::ContractBodyElementT::FunctionDef:
   {
-    return get_function_definition(ast_node); // rule function-definition
+    std::cout << "2!" << std::endl;
+    return get_constructor_definition(ast_node); // rule function-definition
   }
   default:
   {
+    std::cout << "3!" << std::endl;
     assert(!"Unimplemented type in rule contract-body-element");
     return true;
   }
@@ -299,6 +303,62 @@ bool solidity_convertert::get_var_decl(
   new_expr = decl;
 
   return false;
+}
+
+bool solidity_convertert::get_constructor_definition(const nlohmann::json &ast_node)
+{
+  if(ast_node["kind"] == "constructor")
+  {
+    std::cout << "!" << std::endl;
+    current_scope_var_num = 1;
+    const nlohmann::json *old_functionDecl = current_functionDecl;
+    current_functionDecl = &ast_node;
+    current_functionName = (*current_functionDecl)["name"].get<std::string>();
+
+    locationt location_begin;
+    get_location_from_decl(ast_node, location_begin);
+
+    std::string name, id;
+    get_function_definition_name(ast_node, name, id);
+
+    std::string debug_modulename =
+    get_modulename_from_path(location_begin.file().as_string());
+
+    code_typet type;
+    get_type_description(ast_node["returnParameters"], type.return_type());
+
+    symbolt symbol;
+    get_default_symbol(symbol, debug_modulename, type, name, id, location_begin);
+
+    symbol.lvalue = true;
+    symbol.is_extern =
+      false; 
+    symbol.file_local = false;
+
+    symbolt &added_symbol = *move_symbol_to_context(symbol);
+
+    type.make_ellipsis();
+
+    added_symbol.type = type;
+
+    if(ast_node.contains("body"))
+    {
+      exprt body_exprt;
+      get_block(ast_node["body"], body_exprt);
+
+      added_symbol.value = body_exprt;
+    }
+
+    current_functionDecl = old_functionDecl; 
+
+    return false;
+  }
+  else{
+    std::cout << "Hello" << std::endl;
+    return get_function_definition(ast_node);
+  }
+      
+  
 }
 
 bool solidity_convertert::get_function_definition(

@@ -68,8 +68,8 @@ ContractBodyElementT get_contract_body_element_t(const nlohmann::json &element)
     return StateVarDecl;
   }
   else if(
-    element["nodeType"] == "FunctionDefinition" &&
-    element["kind"] == "function")
+    element["nodeType"] == "FunctionDefinition" && (
+    element["kind"] == "function" || element["kind"] == "constructor"))
   {
     return FunctionDef;
   }
@@ -117,7 +117,7 @@ TypeNameT get_type_name_t(const nlohmann::json &type_name)
       // For state var declaration,
       return ElementaryTypeName;
     }
-    else if(typeString.find("int_const") != std::string::npos)
+    else if(typeString.find("int_const") != std::string::npos || typeString.find("address") != std::string::npos)
     {
       // For Literal, their typeString is like "int_const 100".
       return ElementaryTypeName;
@@ -229,7 +229,7 @@ ElementaryTypeNameT get_elementary_type_name_t(const nlohmann::json &type_name)
   }
   if(
     typeString == "string" || typeString == "string storage ref" ||
-    typeString == "string memory")
+    typeString == "string memory" || typeString == "address")
   {
     return STRING;
   }
