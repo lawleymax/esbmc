@@ -1,5 +1,6 @@
 #include <solidity-frontend/pattern_check.h>
 #include <stdlib.h>
+#include <iostream>
 
 pattern_checker::pattern_checker(
   const nlohmann::json &_ast_nodes,
@@ -24,10 +25,12 @@ bool pattern_checker::do_pattern_check()
     {
       // locate the target function
       if(
-        (*itr)["kind"].get<std::string>() == "function" &&
-        (*itr)["nodeType"].get<std::string>() == "FunctionDefinition" &&
-        (*itr)["name"].get<std::string>() == target_func)
+        (((*itr)["kind"].get<std::string>() == "function") || ((*itr)["kind"].get<std::string>() == "constructor"))
+        &&(*itr)["nodeType"].get<std::string>() == "FunctionDefinition" &&
+          (((*itr)["name"].get<std::string>() == target_func) || ((*itr)["name"].get<std::string>() == "")))
+        {
         return start_pattern_based_check(*itr);
+        }
     }
   }
 
