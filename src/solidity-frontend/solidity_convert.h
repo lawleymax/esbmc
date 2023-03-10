@@ -24,6 +24,7 @@ public:
   bool convert();
 
 protected:
+  std::string contractName;
   contextt &context;
   namespacet ns;
   nlohmann::json

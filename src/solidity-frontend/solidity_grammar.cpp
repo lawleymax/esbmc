@@ -2,6 +2,7 @@
 #include <fmt/core.h>
 #include <set>
 #include <util/message.h>
+#include <iostream>
 
 #define ENUM_TO_STR(s)                                                         \
   case s:                                                                      \
@@ -117,7 +118,7 @@ TypeNameT get_type_name_t(const nlohmann::json &type_name)
       // For state var declaration,
       return ElementaryTypeName;
     }
-    else if(typeString.find("int_const") != std::string::npos || typeString.find("address") != std::string::npos)
+    else if(typeString.find("int_const") != std::string::npos || typeString == "address" || typeString == "address payable")
     {
       // For Literal, their typeString is like "int_const 100".
       return ElementaryTypeName;
@@ -229,15 +230,23 @@ ElementaryTypeNameT get_elementary_type_name_t(const nlohmann::json &type_name)
   }
   if(
     typeString == "string" || typeString == "string storage ref" ||
-    typeString == "string memory" || typeString == "address")
+    typeString == "string memory")
   {
     return STRING;
   }
+  if(typeString == "address")
+  {
+    return ADDRESS;
+  }
+  if(typeString == "address payable")
+  {
+    return ADDRESS_PAYABLE;
+  }
 
-  log_error(
-    "Got elementary-type-name typeString={}. Unsupported "
-    "elementary-type-name type",
-    type_name["typeString"].get<std::string>());
+    log_error(
+      "Got elementary-type-name typeString={}. Unsupported "
+      "elementary-type-name type",
+      type_name["typeString"].get<std::string>());
   abort();
 }
 
@@ -458,6 +467,7 @@ const char *statement_to_str(StatementT type)
 // rule expression
 ExpressionT get_expression_t(const nlohmann::json &expr)
 {
+  std::cout << expr["nodeType"] << std::endl;
   if(expr["nodeType"] == "Assignment" || expr["nodeType"] == "BinaryOperation")
   {
     return BinaryOperatorClass;
@@ -486,6 +496,14 @@ ExpressionT get_expression_t(const nlohmann::json &expr)
   else if(expr["nodeType"] == "IndexAccess")
   {
     return IndexAccess;
+  }
+  else if (expr["nodeType"] == "MemberAccess")
+  {
+    return MemberAccess;
+  }
+  else if (expr["nodeType"] == "TupleExpression")
+  {
+    return TupleExpression;
   }
   else
   {

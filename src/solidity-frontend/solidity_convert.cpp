@@ -10,6 +10,8 @@
 #include <util/std_expr.h>
 #include <regex>
 #include <iostream>
+#include <list>
+#include <string>
 
 #include <fstream>
 
@@ -64,6 +66,7 @@ bool solidity_convertert::convert()
     std::string node_type = (*itr)["nodeType"].get<std::string>();
     if(node_type == "ContractDefinition") // contains AST nodes we need
     {
+      contractName = (*itr)["name"].get<std::string>();
       global_scope_id = (*itr)["id"];
       found_contract_def = true;
       // pattern-based verification
@@ -135,12 +138,10 @@ bool solidity_convertert::get_decl(
   {  
   case SolidityGrammar::ContractBodyElementT::StateVarDecl:
   {
-    std::cout << "1!" << std::endl;
     return get_var_decl(ast_node, new_expr); // rule state-variable-declaration
   }
   case SolidityGrammar::ContractBodyElementT::FunctionDef:
   {
-    std::cout << "2!" << std::endl;
     return get_function_definition(ast_node); // rule function-definition
   }
   default:
@@ -324,8 +325,14 @@ bool solidity_convertert::get_function_definition(
   current_scope_var_num = 1;
   const nlohmann::json *old_functionDecl = current_functionDecl;
   current_functionDecl = &ast_node;
-  current_functionName = (*current_functionDecl)["name"].get<std::string>();
 
+  if(ast_node["kind"] == "constructor")
+  {
+    current_functionName = "constructor";
+  }
+  else{  
+    current_functionName = (*current_functionDecl)["name"].get<std::string>();
+  }
   // 4. Return type
   code_typet type;
   if(get_type_description(ast_node["returnParameters"], type.return_type()))
@@ -343,10 +350,10 @@ bool solidity_convertert::get_function_definition(
   std::string name, id;
   get_function_definition_name(ast_node, name, id);
 
-  if(name == "" && ast_node["kind"] == "constructor")
+  if(ast_node["kind"] == "constructor")
   {
-    name = "constructor";
-    id = "constructor";
+    name = current_functionName;
+    id = contractName;
   }
 
   if(name == "func_dynamic")
@@ -936,6 +943,45 @@ bool solidity_convertert::get_expr(
     new_expr = index_exprt(array, pos, t);
     break;
   }
+  case SolidityGrammar::ExpressionT::MemberAccess:
+  {
+    typet t;
+    if(get_type_description(expr["typeDescriptions"], t))
+      return true;
+
+    std::string memberName = expr["memberName"];
+    std::cout << memberName <<std::endl;
+    std::cout << t << std::endl;
+
+    exprt msg_sender = symbol_exprt("msg.sender", t);
+    exprt address_of_msg_sender = address_of_exprt(msg_sender);
+    new_expr = std::move(address_of_msg_sender);
+    
+    break;
+  }
+  case SolidityGrammar::ExpressionT::TupleExpression:
+  {
+    typet t;
+    if (get_type_description(expr["typeDescriptions"], t))
+      return true;
+
+    struct_exprt tuple_struct;
+    tuple_struct.type() = t;
+
+    const nlohmann::json tupleValues = expr["components"];
+
+    for (const auto &value : tupleValues)
+    {
+      exprt component_expr;
+      if (get_expr(value, component_expr))
+        return true;
+
+      tuple_struct.operands().push_back(component_expr);
+    }
+
+    new_expr = std::move(tuple_struct);
+    break;
+  }
   default:
   {
     assert(!"Unimplemented type in rule expression");
@@ -1272,6 +1318,7 @@ bool solidity_convertert::get_type_description(
   typet &new_type)
 {
   // For Solidity rule type-name:
+
   SolidityGrammar::TypeNameT type = SolidityGrammar::get_type_name_t(type_name);
 
   switch(type)
@@ -1296,10 +1343,15 @@ bool solidity_convertert::get_type_description(
       std::string::npos);
 
     // Since Solidity does not have this, first make a pointee
+
     nlohmann::json pointee = make_pointee_type(type_name);
     typet sub_type;
+    std::cout << pointee << std::endl;
+
     if(get_func_decl_ref_type(pointee, sub_type))
       return true;
+
+    std::cout << "here" << std::endl;
 
     if(sub_type.is_struct() || sub_type.is_union())
       assert(!"struct or union is NOT supported");
@@ -1433,6 +1485,42 @@ bool solidity_convertert::get_func_decl_ref_type(
 
     if(!type.arguments().size())
       type.make_ellipsis();
+
+    new_type = type;
+    break;
+  }
+  case SolidityGrammar::FunctionDeclRefT::FunctionProto:
+  {
+    code_typet type;
+
+    const nlohmann::json &inputs = decl["parameters"]["parameters"];
+
+    for (const auto &input : inputs)
+    {
+        code_typet a;
+
+        typet typea;
+
+        if (get_type_description(input["typeDescriptions"], typea))
+        {
+            return true;
+        }
+
+        a.type() = typea;
+
+        type.arguments().push_back(a);
+    }
+
+    if (decl.count("returnParameters") > 0)
+    {
+      const nlohmann::json &rtn_type = decl["returnParameters"];
+    
+      typet return_type;
+      if(get_type_description(rtn_type, return_type))
+        return true;
+
+      type.return_type() = return_type;
+    }
 
     new_type = type;
     break;
@@ -1621,6 +1709,17 @@ bool solidity_convertert::get_elementary_type_name(
         integer2binary(value_length, bv_width(int_type())),
         integer2string(value_length),
         int_type()));
+    break;
+  }
+  case SolidityGrammar::ElementaryTypeNameT::ADDRESS:
+  {
+    new_type = unsignedbv_typet(160);
+    break;
+  }
+  case SolidityGrammar::ElementaryTypeNameT::ADDRESS_PAYABLE:
+  {
+    typet temp_type = unsignedbv_typet(160);
+    new_type = pointer_typet(temp_type);
     break;
   }
   default:
@@ -2087,7 +2186,98 @@ solidity_convertert::make_pointee_type(const nlohmann::json &sub_expr)
       }
     }
     else
-      assert(!"Unsupported - detected function call with parameters");
+    {
+      auto j2 = R"(
+        {
+          "nodeType": "FunctionDefinition",
+          "parameters": 
+          {
+            "parameters": []
+          }
+        }
+      )"_json;
+      adjusted_expr = j2;
+      std::list<std::string> inputs;
+      bool inBracket = false;
+      int count = 0;
+      std::string temp_word = "";
+      std::string typeString = sub_expr["typeString"].get<std::string>();
+      for (int i = 0; i < typeString.length(); i++)
+      {
+          if (typeString[i] == '(')
+          {
+            inBracket = true;
+          }
+          else if(typeString[i] == ')')
+          {
+            inBracket = false;
+            inputs.push_back(temp_word);
+            break;
+          }
+          else if (inBracket && typeString[i] == ',') 
+          {
+            count = count + 1;
+            inputs.push_back(temp_word);
+            temp_word = "";
+          }
+          else if (inBracket) 
+          {
+            temp_word = temp_word + typeString[i];
+          }
+      }
+
+      for (auto it = inputs.begin(); it != inputs.end(); ++it)
+      {
+        std::cout << *it << std::endl;
+      }
+      for (auto it = inputs.begin(); it != inputs.end(); ++it)
+      {
+        if (*it == "address payable")
+        {
+          auto j2 = R"(
+            {
+              "typeDescriptions": {
+                  "typeIdentifier": "t_address_payable",
+                  "typeString": "address payable"
+              }        
+            }
+          )"_json;
+          adjusted_expr["parameters"]["parameters"].push_back(j2);
+        }
+        if (*it == "uint8")
+        {
+          auto j2 = R"(
+            {
+              "typeDescriptions": {
+                  "typeIdentifier": "t_uint8",
+                  "typeString": "uint8"
+              }
+            }
+          )"_json;
+          adjusted_expr["parameters"]["parameters"].push_back(j2);
+        }
+      }
+
+      if(
+        sub_expr["typeString"].get<std::string>().find("returns") !=
+        std::string::npos)
+      {
+        if(
+          sub_expr["typeString"].get<std::string>().find("returns (uint8)") !=
+          std::string::npos)
+        {
+          auto j2 = R"(
+            {
+              "typeIdentifier": "t_uint8",
+              "typeString": "uint8"
+            }
+          )"_json;
+          adjusted_expr["returnParameters"] = j2;
+        }
+        else
+          assert(!"Unsupported return types in pointee");
+      }
+    }
   }
   else
     assert(!"Unsupported pointee - currently we only support the semantics of function to pointer decay");

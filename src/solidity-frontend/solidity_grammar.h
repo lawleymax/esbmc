@@ -121,6 +121,8 @@ enum ElementaryTypeNameT
   BOOL,
 
   // TODO: rule address
+  ADDRESS,
+  ADDRESS_PAYABLE,
   // TODO: rule address payable
   // rule string
   STRING,
@@ -217,6 +219,10 @@ enum ExpressionT
   // equivalent to clang::Stmt::ArraySubscriptExprClass
   // Solidity does NOT provide such rule
   IndexAccess,
+
+  MemberAccess,
+
+  TupleExpression,
 
   ExpressionTError
 };
