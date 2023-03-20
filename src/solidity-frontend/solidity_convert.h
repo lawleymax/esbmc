@@ -10,6 +10,8 @@
 #include <nlohmann/json.hpp>
 #include <solidity-frontend/solidity_grammar.h>
 #include <solidity-frontend/pattern_check.h>
+#include <clang-c-frontend/padding.h>
+
 
 class solidity_convertert
 {
@@ -31,7 +33,9 @@ protected:
     &ast_json; // json for Solidity AST. Use vector for multiple contracts
   const std::string &sol_func;      // Solidity function to be verified
   const std::string &contract_path; //smart contract source file
-
+  typedef std::unordered_map<std::size_t, std::pair<std::string, typet>>
+    this_mapt;
+  this_mapt this_map;
   std::string absolute_path;
   std::string contract_contents = "";
   int global_scope_id; // scope id of "ContractDefinition"
@@ -54,9 +58,13 @@ protected:
   // get decl in rule variable-declaration-statement, e.g. function local declaration
   bool get_var_decl_stmt(const nlohmann::json &ast_node, exprt &new_expr);
   bool get_var_decl(const nlohmann::json &ast_node, exprt &new_expr);
-  bool get_constructor_definition(const nlohmann::json &ast_node);
+  bool get_struct_class(const nlohmann::json &ast_node);
+  bool get_struct_class_fields(const nlohmann::json &ast_node, struct_typet &type);
+  bool get_struct_class_method(const nlohmann::json &ast_node, struct_typet &type);
+  bool get_access_from_decl(const nlohmann::json &ast_node, struct_typet::componentt &comp);
   bool get_function_definition(const nlohmann::json &ast_node);
   bool get_function_params(const nlohmann::json &pd, exprt &param);
+  bool get_constructor_call(const nlohmann::json &expr, exprt &new_expr);
   bool get_block(
     const nlohmann::json &expr,
     exprt &
@@ -149,7 +157,7 @@ protected:
     exprt &dest);
   bool convert_string_literal(std::string the_value, exprt &dest);
 
-  static constexpr const char *mode = "C";
+  static constexpr const char *mode = "C++";
 
 private:
   bool get_elementary_type_name_uint(

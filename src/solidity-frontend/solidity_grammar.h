@@ -40,6 +40,8 @@ enum TypeNameT
   // dynamic array type
   DynArrayTypeName,
 
+  ContractTypeName,
+
   TypeNameTError
 };
 TypeNameT get_type_name_t(const nlohmann::json &type_name);
@@ -224,6 +226,8 @@ enum ExpressionT
 
   TupleExpression,
 
+  NewExpression,
+
   ExpressionTError
 };
 ExpressionT get_expression_t(const nlohmann::json &expr);
@@ -269,6 +273,17 @@ enum ImplicitCastTypeT
 };
 ImplicitCastTypeT get_implicit_cast_type_t(std::string cast);
 const char *implicit_cast_type_to_str(ImplicitCastTypeT type);
+
+
+enum VisibilityT
+{
+  PublicT,
+  PrivateT,
+  ExternalT,
+  InternalT,
+  UnknownT
+}; // access
+VisibilityT get_access_t(const nlohmann::json &ast_node);
 
 }; // namespace SolidityGrammar
 

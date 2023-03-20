@@ -123,7 +123,8 @@ TypeNameT get_type_name_t(const nlohmann::json &type_name)
       // For Literal, their typeString is like "int_const 100".
       return ElementaryTypeName;
     }
-    else if(typeString.find("function") != std::string::npos)
+    else if(typeString.find("function") != std::string::npos &&
+      typeString.find("contract ") == std::string::npos)
     {
       // FunctionToPointer decay in CallExpr when making a function call
       return Pointer;
@@ -149,6 +150,12 @@ TypeNameT get_type_name_t(const nlohmann::json &type_name)
         return DynArrayTypeName;
 
       return ArrayTypeName;
+    }
+    else if(
+      type_name["typeIdentifier"].get<std::string>().find("t_contract") !=
+      std::string::npos)
+    {
+      return ContractTypeName;
     }
     else
     {
@@ -187,6 +194,7 @@ const char *type_name_to_str(TypeNameT type)
     ENUM_TO_STR(PointerArrayToPtr)
     ENUM_TO_STR(ArrayTypeName)
     ENUM_TO_STR(DynArrayTypeName)
+    ENUM_TO_STR(ContractTypeName)
     ENUM_TO_STR(TypeNameTError)
   default:
   {
@@ -487,6 +495,10 @@ ExpressionT get_expression_t(const nlohmann::json &expr)
   }
   else if(expr["nodeType"] == "FunctionCall")
   {
+    if(expr["expression"]["nodeType"] == "NewExpression")
+    {
+        return NewExpression;
+    }
     return CallExprClass;
   }
   else if(expr["nodeType"] == "ImplicitCastExprClass")
@@ -614,6 +626,7 @@ const char *expression_to_str(ExpressionT type)
     ENUM_TO_STR(CallExprClass)
     ENUM_TO_STR(ImplicitCastExprClass)
     ENUM_TO_STR(IndexAccess)
+    ENUM_TO_STR(NewExpression)
     ENUM_TO_STR(ExpressionTError)
   default:
   {
@@ -725,5 +738,32 @@ const char *implicit_cast_type_to_str(ImplicitCastTypeT type)
     return "UNKNOWN";
   }
   }
+}
+
+VisibilityT get_access_t(const nlohmann::json &ast_node)
+{
+  std::string access = ast_node["visibility"].get<std::string>();
+  if(access == "public")
+  {
+    return PublicT;
+  }
+  else if(access == "private")
+  {
+    return PrivateT;
+  }
+  else if(access == "external")
+  {
+    return ExternalT;
+  }
+  else if(access == "internal")
+  {
+    return InternalT;
+  }
+  else
+  {
+    log_error("Unknown Visibility");
+    abort();
+  }
+  return UnknownT;
 }
 }; // namespace SolidityGrammar

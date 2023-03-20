@@ -66,7 +66,6 @@ bool solidity_convertert::convert()
     std::string node_type = (*itr)["nodeType"].get<std::string>();
     if(node_type == "ContractDefinition") // contains AST nodes we need
     {
-      contractName = (*itr)["name"].get<std::string>();
       global_scope_id = (*itr)["id"];
       found_contract_def = true;
       // pattern-based verification
@@ -87,6 +86,10 @@ bool solidity_convertert::convert()
     std::string node_type = (*itr)["nodeType"].get<std::string>();
     if(node_type == "ContractDefinition") // rule source-unit
     {
+      contractName = (*itr)["name"].get<std::string>();
+      if(get_struct_class(*itr))
+        return true;
+
       if(convert_ast_nodes(*itr))
         return true; // 'true' indicates something goes wrong.
     }
@@ -305,6 +308,122 @@ bool solidity_convertert::get_var_decl(
   return false;
 }
 
+bool solidity_convertert::get_struct_class(const nlohmann::json &contract_def)
+{
+  // Convert Contract => class => struct
+
+  // 1. populate name, id
+  std::string id, name;
+  name = contractName;
+  id = "tag-" + name;
+  struct_typet t = struct_typet();
+  t.tag(name);
+
+  // 2. Check if the symbol is already added to the context, do nothing if it is
+  // already in the context.
+  if(context.find_symbol(id) != nullptr)
+    return false;
+
+  // 3. populate location
+  locationt location_begin;
+  get_location_from_decl(contract_def, location_begin);
+
+  // 4. populate debug module name
+  std::string debug_modulename =
+    get_modulename_from_path(location_begin.file().as_string());
+
+  symbolt symbol;
+  get_default_symbol(symbol, debug_modulename, t, name, id, location_begin);
+
+  symbol.is_type = true;
+  symbolt &added_symbol = *move_symbol_to_context(symbol);
+
+  // 5. populate fields(data memeber) and method(function)
+  nlohmann::json ast_nodes = contract_def["nodes"];
+  for(nlohmann::json::iterator itr = ast_nodes.begin(); itr != ast_nodes.end();
+      ++itr)
+  {
+    SolidityGrammar::ContractBodyElementT type =
+      SolidityGrammar::get_contract_body_element_t(*itr);
+
+    switch(type)
+    {
+    case SolidityGrammar::ContractBodyElementT::StateVarDecl:
+    {
+      if(get_struct_class_fields(*itr, t))
+        return true;
+      break;
+    }
+    case SolidityGrammar::ContractBodyElementT::FunctionDef:
+    {
+      if(get_struct_class_method(*itr, t))
+        return true;
+      break;
+    }
+    default:
+    {
+      assert(!"Unimplemented type in rule contract-body-element");
+      return true;
+    }
+    }
+  }
+
+  add_padding(t, ns);
+  t.location() = location_begin;
+  added_symbol.type = t;
+
+  return false;
+}
+
+bool solidity_convertert::get_struct_class_fields(
+  const nlohmann::json &ast_node,
+  struct_typet &type)
+{
+  struct_typet::componentt comp;
+
+  if(
+    SolidityGrammar::get_access_t(ast_node) ==
+    SolidityGrammar::VisibilityT::UnknownT)
+    return false;
+
+  if(get_var_decl(ast_node, comp))
+    return true;
+  comp.type().set("#member_name", type.name());
+  if(get_access_from_decl(ast_node, comp))
+    return true;
+  type.components().push_back(comp);
+
+  return false;
+}
+
+bool solidity_convertert::get_struct_class_method(
+  const nlohmann::json &ast_node,
+  struct_typet &type)
+{
+  struct_typet::componentt comp;
+  if(get_decl(ast_node, comp))
+    return true;
+  if(comp.is_code() && to_code(comp).statement() == "skip")
+    return false;
+  type.methods().push_back(comp);
+  return false;
+}
+
+bool solidity_convertert::get_access_from_decl(
+  const nlohmann::json &ast_node,
+  struct_typet::componentt &comp)
+{
+  if(
+    SolidityGrammar::get_access_t(ast_node) ==
+    SolidityGrammar::VisibilityT::UnknownT)
+    return true;
+
+  std::string access = ast_node["visibility"].get<std::string>();
+  comp.set_access(access);
+
+  return false;
+}
+
 bool solidity_convertert::get_function_definition(
   const nlohmann::json &ast_node)
 {
@@ -480,6 +599,50 @@ bool solidity_convertert::get_function_params(
   return false;
 }
 
+bool solidity_convertert::get_constructor_call(
+  const nlohmann::json &ast_node,
+  exprt &new_expr)
+{
+  nlohmann::json expr = ast_node["expression"];
+  std::string name, id;
+  name = expr["typeName"]["pathNode"]["name"].get<std::string>();
+  id = "tag-" + name;
+  symbolt s = *context.find_symbol(id);
+  typet type = s.type;
+
+  std::cout << s << std::endl;
+
+  // TODO: populate function params
+  new_expr = exprt("symbol", type);
+  new_expr.identifier(id);
+  new_expr.cmt_lvalue(true);
+  new_expr.name(name);
+
+  side_effect_expr_function_callt call;
+  call.function() = new_expr;
+  call.type() = type;
+
+  unsigned num_args = 0;
+  if(expr.contains("arguments"))
+  {
+    for(const auto &arg : expr["arguments"].items())
+    {
+      exprt single_arg;
+      if(get_expr(arg.value(), single_arg))
+        return true;
+
+      call.arguments().push_back(single_arg);
+      ++num_args;
+    }
+  }
+
+  call.set("constructor", 1);
+  new_expr.swap(call);
+
+  std::cout << new_expr << std::endl;
+  return false;
+}
+
 bool solidity_convertert::get_block(
   const nlohmann::json &block,
   exprt &new_expr)
@@ -587,7 +750,7 @@ bool solidity_convertert::get_statement(
       exprt single_decl;
       if(get_var_decl_stmt(decl, single_decl))
         return true;
-
+      convert_expression_to_code(single_decl);
       decls.operands().push_back(single_decl);
       ++ctr;
     }
@@ -675,6 +838,7 @@ bool solidity_convertert::get_statement(
     code_for.body() = body;
 
     new_expr = code_for;
+    current_forStmt = nullptr;
     break;
   }
   case SolidityGrammar::StatementT::IfStatement:
@@ -950,8 +1114,6 @@ bool solidity_convertert::get_expr(
       return true;
 
     std::string memberName = expr["memberName"];
-    std::cout << memberName <<std::endl;
-    std::cout << t << std::endl;
 
     exprt msg_sender = symbol_exprt("msg.sender", t);
     exprt address_of_msg_sender = address_of_exprt(msg_sender);
@@ -980,6 +1142,22 @@ bool solidity_convertert::get_expr(
     }
 
     new_expr = std::move(tuple_struct);
+    break;
+  }
+  case SolidityGrammar::ExpressionT::NewExpression:
+  {
+    // get the constructor call making this temporary
+    if(get_constructor_call(expr, new_expr))
+      return true;
+    // make the temporary
+    side_effect_exprt tmp_obj("temporary_object", new_expr.type());
+    codet code_expr("expression");
+    code_expr.operands().push_back(new_expr);
+    tmp_obj.initializer(code_expr);
+    tmp_obj.location() = new_expr.location();
+
+    new_expr.swap(tmp_obj);
+
     break;
   }
   default:
@@ -1346,12 +1524,9 @@ bool solidity_convertert::get_type_description(
 
     nlohmann::json pointee = make_pointee_type(type_name);
     typet sub_type;
-    std::cout << pointee << std::endl;
 
     if(get_func_decl_ref_type(pointee, sub_type))
       return true;
-
-    std::cout << "here" << std::endl;
 
     if(sub_type.is_struct() || sub_type.is_union())
       assert(!"struct or union is NOT supported");
@@ -1436,6 +1611,21 @@ bool solidity_convertert::get_type_description(
 
     new_type = array_typet(subtype, size_expr);
 
+    break;
+  }
+  case SolidityGrammar::TypeNameT::ContractTypeName:
+  {
+    // i.e. ContractName tmp = new ContractName(Args);
+
+    std::string constructor_name = type_name["typeString"].get<std::string>();
+    size_t pos = constructor_name.find(" ");
+    std::string id = "tag-" + constructor_name.substr(pos + 1);
+
+    if(context.find_symbol(id) == nullptr)
+      return true;
+
+    symbolt &s = *context.find_symbol(id);
+    new_type = s.type;
     break;
   }
   default:
@@ -1973,6 +2163,7 @@ const nlohmann::json &solidity_convertert::find_decl_ref(int ref_decl_id)
 
   nlohmann::json &ast_nodes = nodes.at(index)["nodes"];
 
+
   index = 0;
   for(nlohmann::json::iterator itrr = ast_nodes.begin();
       itrr != ast_nodes.end();
@@ -2169,6 +2360,18 @@ solidity_convertert::make_pointee_type(const nlohmann::json &sub_expr)
           )"_json;
           adjusted_expr["returnParameters"] = j2;
         }
+        else if(
+          sub_expr["typeString"].get<std::string>().find("returns (contract") !=
+          std::string::npos)
+        {
+          auto j2 = R"(
+          {
+            "typeIdentifier": "t_contract",
+            "typeString": "contract"
+          }
+        )"_json;
+          adjusted_expr["returnParameters"] = j2;
+        }
         else
           assert(!"Unsupported return types in pointee");
       }
@@ -2228,10 +2431,6 @@ solidity_convertert::make_pointee_type(const nlohmann::json &sub_expr)
 
       for (auto it = inputs.begin(); it != inputs.end(); ++it)
       {
-        std::cout << *it << std::endl;
-      }
-      for (auto it = inputs.begin(); it != inputs.end(); ++it)
-      {
         if (*it == "address payable")
         {
           auto j2 = R"(
@@ -2274,6 +2473,18 @@ solidity_convertert::make_pointee_type(const nlohmann::json &sub_expr)
           )"_json;
           adjusted_expr["returnParameters"] = j2;
         }
+        else if(
+          sub_expr["typeString"].get<std::string>().find("returns (contract") !=
+          std::string::npos)
+        {
+          auto j2 = R"(
+          {
+            "typeIdentifier": "t_contract",
+            "typeString": "contract"
+          }
+        )"_json;
+          adjusted_expr["returnParameters"] = j2;
+        }
         else
           assert(!"Unsupported return types in pointee");
       }
@@ -2311,6 +2522,18 @@ nlohmann::json solidity_convertert::make_callexpr_return_type(
           )"_json;
         adjusted_expr = j2;
       }
+       else if(
+          type_descrpt["typeString"].get<std::string>().find("returns (contract") !=
+          std::string::npos)
+        {
+          auto j2 = R"(
+          {
+            "typeIdentifier": "t_contract",
+            "typeString": "contract"
+          }
+        )"_json;
+          adjusted_expr["returnParameters"] = j2;
+        }
       else
         assert(!"Unsupported types in callee's return in CallExpr");
     }
