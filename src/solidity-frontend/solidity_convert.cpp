@@ -406,6 +406,7 @@ bool solidity_convertert::get_struct_class_method(
   if(comp.is_code() && to_code(comp).statement() == "skip")
     return false;
   type.methods().push_back(comp);
+  
   return false;
 }
 
