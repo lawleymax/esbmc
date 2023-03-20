@@ -1,7 +1,7 @@
+#include <util/compiler_defs.h>
 // Remove warnings from Clang headers
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wstrict-aliasing"
-#pragma GCC diagnostic ignored "-Wunused-parameter"
+CC_DIAGNOSTIC_PUSH()
+CC_DIAGNOSTIC_IGNORE_LLVM_CHECKS()
 #include <clang/AST/Attr.h>
 #include <clang/AST/Expr.h>
 #include <clang/AST/ParentMapContext.h>
@@ -11,7 +11,7 @@
 #include <clang/Index/USRGeneration.h>
 #include <clang/Frontend/ASTUnit.h>
 #include <llvm/Support/raw_os_ostream.h>
-#pragma GCC diagnostic pop
+CC_DIAGNOSTIC_POP()
 
 #include <clang-c-frontend/padding.h>
 #include <clang-c-frontend/clang_c_convert.h>
@@ -92,7 +92,7 @@ bool clang_c_convertert::convert_top_level_decl()
 
 // This method convert declarations. They are called when those declarations
 // are to be added to the context. If a variable or function is being called
-// but then get_decl_expr is called instead
+// but then get_decl_ref is called instead
 bool clang_c_convertert::get_decl(const clang::Decl &decl, exprt &new_expr)
 {
   new_expr = code_skipt();
@@ -562,17 +562,16 @@ bool clang_c_convertert::get_function(
   // Don't convert if implicit, unless it's a constructor or destructor
   // A compiler-generated default ctor/dtor is considered implicit, but we have
   // to parse it.
-  auto isContructorOrDestructor = [](const clang::FunctionDecl &fd) {
-    return fd.getKind() == clang::Decl::CXXConstructor ||
-           fd.getKind() == clang::Decl::CXXDestructor;
-  };
-
-  if(fd.isImplicit() && !isContructorOrDestructor(fd))
+  if(fd.isImplicit() && !is_ConstructorOrDestructor(fd))
     return false;
 
   // If the function is not defined but this is not the definition, skip it
   if(fd.isDefined() && !fd.isThisDeclarationADefinition())
-    return false;
+  {
+    // Continue for virtual method as we need its type to make virtual function table
+    if(!is_fd_virtual_or_overriding(fd))
+      return false;
+  }
 
   // Save old_functionDecl, to be restored at the end of this method
   const clang::FunctionDecl *old_functionDecl = current_functionDecl;
@@ -1571,15 +1570,24 @@ bool clang_c_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
     const clang::MemberExpr &member =
       static_cast<const clang::MemberExpr &>(stmt);
 
-    exprt base;
-    if(get_expr(*member.getBase(), base))
-      return true;
+    if(!perform_virtual_dispatch(member))
+    {
+      exprt base;
+      if(get_expr(*member.getBase(), base))
+        return true;
 
-    exprt comp;
-    if(get_decl(*member.getMemberDecl(), comp))
-      return true;
+      exprt comp;
+      if(get_decl(*member.getMemberDecl(), comp))
+        return true;
 
-    new_expr = member_exprt(base, comp.name(), comp.type());
+      new_expr = member_exprt(base, comp.name(), comp.type());
+    }
+    else
+    {
+      if(get_vft_binding_expr(member, new_expr))
+        return true;
+    }
+
     break;
   }
 
@@ -1840,7 +1848,7 @@ bool clang_c_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
     exprt inits;
 
     // Structs/unions/arrays put the initializer on operands
-    if(t.is_struct() || t.is_union() || t.is_array() || t.is_vector())
+    if(t.is_struct() || t.is_array() || t.is_vector())
     {
       // Initializer everything to zero, even pads
       // TODO: should we initialize pads with nondet values?
@@ -1851,7 +1859,7 @@ bool clang_c_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
           ++i)
       {
         // if it is an struct/union, we should skip padding
-        if(t.is_struct() || t.is_union())
+        if(t.is_struct())
           if(
             to_struct_union_type(t).components()[i].get_is_padding() ||
             to_struct_union_type(t).components()[i].get_is_unnamed_bitfield())
@@ -1863,7 +1871,7 @@ bool clang_c_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
           return true;
 
         typet elem_type;
-        if(t.is_struct() || t.is_union())
+        if(t.is_struct())
           elem_type = to_struct_union_type(t).components()[i].type();
         else if(t.is_array())
           elem_type = to_array_type(t).subtype();
@@ -1872,11 +1880,24 @@ bool clang_c_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
         gen_typecast(ns, init, elem_type);
         inits.operands().at(i) = init;
       }
-
-      // If this expression is initializing an union, we should
-      // set which field is being initialized
-      if(t.is_union())
+    }
+    else if(t.is_union())
+    {
+      /* The Clang AST either contains a single initializer for union-typed
+       * expressions or none for the empty union. Create a constant expression
+       * of the right type and set its init-expression, if it exists.
+       * The init expression has to be the only operand to this expression
+       * regardless of the position the initialized field is being declared. */
+      inits = gen_zero(t);
+      if(init_stmt.getNumInits() > 0)
       {
+        assert(init_stmt.getNumInits() == 1);
+        exprt init;
+        if(get_expr(*init_stmt.getInit(0), init))
+          return true;
+        inits.operands().at(0) = init;
+
+        // set which field is being initialized
         auto init_union_field = init_stmt.getInitializedFieldInUnion();
         if(init_union_field)
           to_union_expr(inits).set_component_name(
@@ -3321,4 +3342,35 @@ bool clang_c_convertert::is_field_global_storage(const clang::FieldDecl *field)
     return (nd->hasGlobalStorage());
 
   return false;
+}
+
+bool clang_c_convertert::is_ConstructorOrDestructor(
+  const clang::FunctionDecl &fd)
+{
+  return fd.getKind() == clang::Decl::CXXConstructor ||
+         fd.getKind() == clang::Decl::CXXDestructor;
+}
+
+bool clang_c_convertert::perform_virtual_dispatch(
+  const clang::MemberExpr &member)
+{
+  // It just can't happen in C
+  return false;
+}
+
+bool clang_c_convertert::is_fd_virtual_or_overriding(
+  const clang::FunctionDecl &fd)
+{
+  // It just can't happen in C
+  return false;
+}
+
+bool clang_c_convertert::get_vft_binding_expr(
+  const clang::MemberExpr &,
+  exprt &)
+{
+  log_error(
+    "MemberExpr call to virtual/overriding function cannot happen in C");
+  abort();
+  return true;
 }

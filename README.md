@@ -6,7 +6,7 @@
 ![Build All Solvers](https://github.com/esbmc/esbmc/workflows/Build%20All%20Solvers/badge.svg)
 [![codecov](https://codecov.io/gh/esbmc/esbmc/branch/master/graph/badge.svg)](https://codecov.io/gh/esbmc/esbmc)
 
-ESBMC (the Efficient SMT-based Context-Bounded Model Checker) is a mature, permissively licensed open-source context-bounded model checker for verifying single- and multithreaded C/C++, Kotlin, and Solidity programs. It can automatically verify both predefined safety properties (e.g., bounds check, pointer safety, overflow) and user-defined program assertions. In addition, ESBMC supports the Clang compiler as its C/C++ frontend, the Soot framework via Jimple as its Java/Kotlin frontend, IEEE floating-point arithmetic for various SMT solvers, implements the Solidity grammar production rules as its Solidity frontend and state-of-the-art incremental BMC and k-induction algorithms.
+ESBMC (the Efficient SMT-based Context-Bounded Model Checker) is a mature, permissively licensed open-source context-bounded model checker for verifying single- and multithreaded C/C++, Kotlin, and Solidity programs. It can automatically verify both predefined safety properties (e.g., bounds check, pointer safety, overflow) and user-defined program assertions. In addition, ESBMC supports the Clang compiler as its C/C++ frontend, the Soot framework via Jimple as its Java/Kotlin frontend, IEEE floating-point arithmetic for various SMT solvers, implements the Solidity grammar production rules as its Solidity frontend.  In addition, ESBMC implements state-of-the-art incremental BMC and *k*-induction proof-rule algorithms based on Satisfiability Modulo Theories (SMT) and Constraint Programming (CP) solvers.
 
 To build ESBMC, please see the [BUILDING](https://github.com/esbmc/esbmc/blob/master/BUILDING.md) file. For getting started, we recommend first reading some of the background material / publications, to understand exactly what this technique can provide, for example our SV-COMP papers, which are available [online](https://ssvlab.github.io/esbmc/publications.html).
 
@@ -67,6 +67,7 @@ ESBMC aims to support all of C99/C11, and detects errors in software by simulati
    * Double-free of malloc'd memory
    * Misaligned memory access
  * Integer overflows
+ * Floating-point for NaN
  * Divide by zero
  * Memory leaks
 
@@ -95,9 +96,10 @@ A limited subset of C++98 is supported too -- a library modelling the STL is als
 ESBMC is a fork of CBMC v2.9 (2008), the C Bounded Model Checker. The primary differences between the two are:
 
 * CBMC focuses on SAT-based encodings of unrolled programs while ESBMC targets SMT-based encodings.
-* CBMC's concurrency support is an entirely symbolic encoding of a concurrent program in one SAT formulae, while ESBMC explores each interleaving individually.
+* CBMC's concurrency support is an entirely symbolic encoding of a concurrent program in one SAT formulae, while ESBMC explores each interleaving individually using context-bounded verification.
 * CBMC uses a modified C parser written by James Roskind and a C++ parser based on OpenC++, while ESBMC relies on the Clang front-end.
 * ESBMC implements the Solidity grammar production rules as its Solidity frontend, while CBMC does not implement a Solidity frontend.
+* ESBMC verifies Kotlin programs with a model of the standard Kotlin libraries and checks a set of safety properties, while CBMC cannot handle Kotlin programs.
 * CBMC implements k-induction, requiring three different calls: to generate the CFG, to annotate the program, and to verify it, whereas ESBMC handles the whole process in a single call. Additionally, CBMC does not have a forward condition to check if all states were reached and relies on a limited loop unwinding.
 * ESBMC adds some additional types to the program's internal representation.
 
@@ -177,4 +179,4 @@ Output will be in docs/html, open index.html to get started.
 
 ### Acknowledgments
 
-The ESBMC development was supported by various research funding agencies, including CNPq (Brazil), CAPES (Brazil), FAPEAM (Brazil), EPSRC (UK), Royal Society (UK), British Council (UK), European Commission (Horizon 2020), and companies including Intel, Motorola, Nokia Institute of Technology and Samsung. ESBMC is currently funded by Intel, EPSRC grants [EP/T026995/1](https://enncore.github.io), [EP/V000497/1](https://scorch-project.github.io), [EU H2020 ELEGANT 957286](https://www.elegant-h2020.eu) and [Soteria project](https://soteriaresearch.org) awarded by the UK Research and Innovation for the Digital Security by Design (DSbD) Programme.
+The ESBMC development was supported by various research funding agencies, including CNPq (Brazil), CAPES (Brazil), FAPEAM (Brazil), EPSRC (UK), Royal Society (UK), British Council (UK), European Commission (Horizon 2020), and companies including ARM, Intel, Motorola, Nokia Institute of Technology and Samsung. ESBMC is currently funded by Intel, EPSRC grants [EP/T026995/1](https://enncore.github.io), [EP/V000497/1](https://scorch-project.github.io), [EU H2020 ELEGANT 957286](https://www.elegant-h2020.eu) and [Soteria project](https://soteriaresearch.org) awarded by the UK Research and Innovation for the Digital Security by Design (DSbD) Programme.

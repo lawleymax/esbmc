@@ -1,7 +1,7 @@
+#include <util/compiler_defs.h>
 // Remove warnings from Clang headers
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wstrict-aliasing"
-#pragma GCC diagnostic ignored "-Wunused-parameter"
+CC_DIAGNOSTIC_PUSH()
+CC_DIAGNOSTIC_IGNORE_LLVM_CHECKS()
 #include <clang/AST/Attr.h>
 #include <clang/AST/DeclCXX.h>
 #include <clang/AST/DeclFriend.h>
@@ -14,7 +14,7 @@
 #include <clang/Frontend/ASTUnit.h>
 #include <clang/AST/ParentMapContext.h>
 #include <llvm/Support/raw_os_ostream.h>
-#pragma GCC diagnostic pop
+CC_DIAGNOSTIC_POP()
 
 #include <clang-cpp-frontend/clang_cpp_convert.h>
 #include <util/expr_util.h>
@@ -221,12 +221,16 @@ bool clang_cpp_convertert::get_function(
   if(fd.isDependentContext())
     return false;
 
+  // Ignore unamed implicit trivial ctor
+  if(is_ctor_unnamed_implicit_trivial(fd))
+    return false;
+
   if(clang_c_convertert::get_function(fd, new_expr))
     return true;
 
   // add additional annotations for class/struct/union methods
   if(const auto *md = llvm::dyn_cast<clang::CXXMethodDecl>(&fd))
-    if(annotate_cpp_methods(md, new_expr))
+    if(annotate_cpp_methods(md, new_expr, fd))
       return true;
 
   return false;
@@ -247,34 +251,14 @@ bool clang_cpp_convertert::get_struct_union_class_fields(
 {
   // Note: If a struct is defined inside an extern C, it will be a RecordDecl
 
-  // let's check for (virtual) base classes if this declaration is a CXXRecordDecl,
+  // pull bases in
   if(auto cxxrd = llvm::dyn_cast<clang::CXXRecordDecl>(&rd))
   {
-    for(const auto &decl : cxxrd->bases())
+    if(cxxrd->bases_begin() != cxxrd->bases_end())
     {
-      // The base class is always a CXXRecordDecl
-      const clang::CXXRecordDecl *base =
-        decl.getType().getTypePtr()->getAsCXXRecordDecl();
-      assert(base != nullptr);
-
-      // First, parse the fields
-      for(auto const *field : base->fields())
-      {
-        // We don't add if private
-        if(field->getAccess() >= clang::AS_private)
-          continue;
-
-        struct_typet::componentt comp;
-        if(get_decl(*field, comp))
-          return true;
-
-        // Don't add fields that have global storage (e.g., static)
-        if(const clang::VarDecl *nd = llvm::dyn_cast<clang::VarDecl>(field))
-          if(nd->hasGlobalStorage())
-            continue;
-
-        type.components().push_back(comp);
-      }
+      base_map bases;
+      get_base_map(cxxrd, bases);
+      get_base_components_methods(bases, type);
     }
   }
 
@@ -316,22 +300,18 @@ bool clang_cpp_convertert::get_struct_union_class_methods(
   if(cxxrd == nullptr)
     return false;
 
-  if(cxxrd->bases().begin() != cxxrd->bases().end())
-  {
-    log_debug(
-      "Class {} has {} bases, {} virtual bases",
-      cxxrd->getNameAsString(),
-      cxxrd->getNumBases(),
-      cxxrd->getNumVBases());
+  /*
+   * Order of converting methods:
+   *  1. convert virtual methods. We also need to add:
+   *    a). virtual table type
+   *    b). virtual pointers
+   *  2. instantiate virtual tables
+   */
 
-#if 0
-    // TODO-split: add methods from base class
-    for(auto base : cxxrd->bases())
-    {
-      // `base` type is clang::CXXBaseSpecifier
-    }
-#endif
-  }
+  // skip unions as they don't have virtual methods
+  if(!recordd.isUnion())
+    if(get_struct_class_virtual_methods(cxxrd, type))
+      return true;
 
   // Iterate over the declarations stored in this context
   for(const auto &decl : cxxrd->decls())
@@ -339,6 +319,14 @@ bool clang_cpp_convertert::get_struct_union_class_methods(
     // Fields were already added
     if(decl->getKind() == clang::Decl::Field)
       continue;
+
+    // virtual methods were already added
+    if(decl->getKind() == clang::Decl::CXXMethod)
+    {
+      const auto md = llvm::dyn_cast<clang::CXXMethodDecl>(decl);
+      if(md->isVirtual())
+        continue;
+    }
 
     struct_typet::componentt comp;
 
@@ -586,9 +574,6 @@ bool clang_cpp_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
 
     if(ne.hasInitializer())
     {
-      exprt lhs("new_object", t);
-      lhs.cmt_lvalue(true);
-
       exprt init;
       if(get_expr(*ne.getInitializer(), init))
         return true;
@@ -663,19 +648,6 @@ bool clang_cpp_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
     const clang::CXXConstructExpr &cxxc =
       static_cast<const clang::CXXConstructExpr &>(stmt);
 
-    // Avoid materializing a temporary for an elidable copy/move constructor.
-    if(cxxc.isElidable() && !cxxc.requiresZeroInitialization())
-    {
-      const clang::MaterializeTemporaryExpr *mt =
-        llvm::dyn_cast<clang::MaterializeTemporaryExpr>(cxxc.getArg(0));
-
-      if(mt != nullptr)
-      {
-        log_error("elidable copy/move is not supported in {}", __func__);
-        abort();
-      }
-    }
-
     if(get_constructor_call(cxxc, new_expr))
       return true;
 
@@ -709,6 +681,26 @@ bool clang_cpp_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
     break;
   }
 
+  case clang::Stmt::CXXTemporaryObjectExprClass:
+  {
+    const clang::CXXTemporaryObjectExpr &cxxtoe =
+      static_cast<const clang::CXXTemporaryObjectExpr &>(stmt);
+
+    // get the constructor call making this temporary
+    if(get_constructor_call(cxxtoe, new_expr))
+      return true;
+
+    // make the temporary
+    side_effect_exprt tmp_obj("temporary_object", new_expr.type());
+    codet code_expr("expression");
+    code_expr.operands().push_back(new_expr);
+    tmp_obj.initializer(code_expr);
+    tmp_obj.location() = new_expr.location();
+    new_expr.swap(tmp_obj);
+
+    break;
+  }
+
   default:
     return clang_c_convertert::get_expr(stmt, new_expr);
   }
@@ -737,9 +729,14 @@ bool clang_cpp_convertert::get_constructor_call(
 
   // Try to get the object that this constructor is constructing
   auto it = ASTContext->getParents(constructor_call).begin();
-
   const clang::Decl *objectDecl = it->get<clang::Decl>();
-  if(!objectDecl)
+
+  /*
+   * We only need to build the new_object if:
+   *  1. we are dealing with new operator
+   *  2. we are binding a temporary
+   */
+  if(!objectDecl && need_new_object(it->get<clang::Stmt>()))
   {
     address_of_exprt tmp_expr;
     tmp_expr.type() = pointer_typet();
@@ -1135,27 +1132,49 @@ bool clang_cpp_convertert::get_access_from_decl(
 
 bool clang_cpp_convertert::annotate_cpp_methods(
   const clang::CXXMethodDecl *cxxmdd,
-  exprt &new_expr)
+  exprt &new_expr,
+  const clang::FunctionDecl &fd)
 {
   code_typet &component_type = to_code_type(new_expr.type());
 
-  // annotate ctor and dtor return type
-  if(cxxmdd->getKind() == clang::Decl::CXXDestructor)
-  {
-    typet rtn_type("destructor");
-    component_type.return_type() = rtn_type;
-  }
-  if(cxxmdd->getKind() == clang::Decl::CXXConstructor)
-  {
-    typet rtn_type("constructor");
-    component_type.return_type() = rtn_type;
-  }
-
+  /*
+   * The order of annotations matters.
+   */
   // annotate parent
   std::string parent_class_name = getFullyQualifiedName(
     ASTContext->getTagDeclType(cxxmdd->getParent()), *ASTContext);
   std::string parent_class_id = tag_prefix + parent_class_name;
   component_type.set("#member_name", parent_class_id);
+
+  // annotate ctor and dtor
+  if(is_ConstructorOrDestructor(fd))
+  {
+    // annotate ctor and dtor return type
+    std::string mark_rtn = (cxxmdd->getKind() == clang::Decl::CXXDestructor)
+                             ? "destructor"
+                             : "constructor";
+    typet rtn_type(mark_rtn);
+    component_type.return_type() = rtn_type;
+
+    /*
+     * We also have a `component` in class type representing the ctor/dtor.
+     * Need to sync the type of this function symbol and its corresponding type
+     * of the component inside the class' symbol
+     * We just need "#member_name" and "return_type" fields to be synced for later use
+     * in the adjuster.
+     * So let's do the sync before adding more annotations.
+     */
+    symbolt *fd_symb = get_fd_symbol(fd);
+    if(fd_symb)
+    {
+      fd_symb->type = component_type;
+      /*
+       * we indicate the need for vptr initializations in contructor.
+       * vptr initializations will be added in the adjuster.
+       */
+      fd_symb->value.need_vptr_init(true);
+    }
+  }
 
   // annotate name
   std::string method_id, method_name;
@@ -1184,7 +1203,6 @@ bool clang_cpp_convertert::annotate_cpp_methods(
 
   // We still need to add a trivial ctor/dtor as a `component` in class symbol's type
   // remove "statement: skip" otherwise it won't be added
-  // TODO-split: Any more elegant way to do it?
   if(
     cxxmdd->getKind() == clang::Decl::CXXDestructor ||
     cxxmdd->getKind() == clang::Decl::CXXConstructor)
@@ -1209,8 +1227,9 @@ void clang_cpp_convertert::gen_typecast_base_ctor_call(
   const code_typet &base_ctor_code_type = to_code_type(callee_decl.type());
   const code_typet::argumentst &base_ctor_arguments =
     base_ctor_code_type.arguments();
-  // just one argument representing `this` in base class ctor
-  assert(base_ctor_arguments.size() == 1);
+  // at least one argument representing `this` in base class ctor
+  assert(base_ctor_arguments.size() >= 1);
+  // Get the type of base `this` represented by the base class ctor
   const typet base_ctor_this_type = base_ctor_arguments.at(0).type();
 
   // get derived class ctor implicit this
@@ -1222,4 +1241,147 @@ void clang_cpp_convertert::gen_typecast_base_ctor_call(
   // generate the type casting expr and push it to callee's arguments
   gen_typecast(ns, implicit_this_symb, base_ctor_this_type);
   call.arguments().push_back(implicit_this_symb);
+}
+
+bool clang_cpp_convertert::need_new_object(const clang::Stmt *parentStmt)
+{
+  /*
+   * Example:
+   * Distinguish `Foo foo = new foo();` from `Foo foo = foo();`
+   * This function will return true for the former.
+   * The latter involves a temporary object and copy constructor call
+   * where the the temporary object construction is considered an argument to
+   * the cpy ctor call's AST node, in which case this function will return false,
+   * indicating we shouldn't make a new_object.
+   */
+  if(parentStmt)
+  {
+    switch(parentStmt->getStmtClass())
+    {
+    case clang::Stmt::CXXNewExprClass:
+    case clang::Stmt::CXXBindTemporaryExprClass:
+      return true;
+    default:
+      return false;
+    }
+  }
+
+  return false;
+}
+
+symbolt *clang_cpp_convertert::get_fd_symbol(const clang::FunctionDecl &fd)
+{
+  std::string id, name;
+  get_decl_name(fd, name, id);
+  // if not found, nullptr is returned
+  return (context.find_symbol(id));
+}
+
+void clang_cpp_convertert::get_base_map(
+  const clang::CXXRecordDecl *cxxrd,
+  base_map &map)
+{
+  /*
+   * This function gets all the base classes from which we need to get the components/methods
+   */
+  for(const clang::CXXBaseSpecifier &base : cxxrd->bases())
+  {
+    // The base class is always a CXXRecordDecl
+    const clang::CXXRecordDecl *base_cxxrd =
+      (base.getType().getTypePtr()->getAsCXXRecordDecl());
+
+    // recursively get more bases for this `base`
+    if(base_cxxrd->bases_begin() != base_cxxrd->bases_end())
+      get_base_map(base_cxxrd, map);
+
+    // get base class id
+    std::string class_id, class_name;
+    clang_c_convertert::get_decl_name(*base_cxxrd, class_name, class_id);
+
+    // avoid adding the same base, e.g. in case of diamond problem
+    if(map.find(class_id) != map.end())
+      continue;
+
+    auto status = map.insert({class_id, base_cxxrd});
+    assert(status.second);
+  }
+}
+
+void clang_cpp_convertert::get_base_components_methods(
+  base_map &map,
+  struct_union_typet &type)
+{
+  for(const auto &base : map)
+  {
+    std::string class_id = base.first;
+
+    // get base class symbol
+    symbolt *s = context.find_symbol(class_id);
+    assert(s);
+
+    const struct_typet &base_type = to_struct_type(s->type);
+
+    // pull components in
+    const struct_typet::componentst &components = base_type.components();
+    for(auto component : components)
+    {
+      // TODO: tweak access specifier
+      component.set("from_base", true);
+      if(!is_duplicate_component(component, type))
+        to_struct_type(type).components().push_back(component);
+    }
+
+    // pull methods in
+    const struct_typet::componentst &methods = base_type.methods();
+    for(auto method : methods)
+    {
+      // TODO: tweak access specifier
+      method.set("from_base", true);
+      if(!is_duplicate_method(method, type))
+        to_struct_type(type).methods().push_back(method);
+    }
+  }
+}
+
+bool clang_cpp_convertert::is_duplicate_component(
+  const struct_typet::componentt &component,
+  const struct_union_typet &type)
+{
+  const struct_typet &stype = to_struct_type(type);
+  const struct_typet::componentst &components = stype.components();
+  for(const auto &existing_component : components)
+  {
+    if(component.name() == existing_component.name())
+      return true;
+  }
+  return false;
+}
+
+bool clang_cpp_convertert::is_duplicate_method(
+  const struct_typet::componentt &method,
+  const struct_union_typet &type)
+{
+  const struct_typet &stype = to_struct_type(type);
+  const struct_typet::componentst &methods = stype.methods();
+  for(const auto &existing_method : methods)
+  {
+    if(method.name() == existing_method.name())
+      return true;
+  }
+  return false;
+}
+
+bool clang_cpp_convertert::is_ctor_unnamed_implicit_trivial(
+  const clang::FunctionDecl &fd)
+{
+  if(const auto *md = llvm::dyn_cast<clang::CXXMethodDecl>(&fd))
+  {
+    if(md->getKind() == clang::Decl::CXXConstructor)
+    {
+      std::string name = clang_c_convertert::get_decl_name(fd);
+      bool unnamed = name.empty() ? true : false;
+      return (fd.isTrivial() && fd.isImplicit() && unnamed);
+    }
+  }
+  return false;
 }
