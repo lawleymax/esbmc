@@ -1,8 +1,8 @@
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wstrict-aliasing"
-#pragma GCC diagnostic ignored "-Wunused-parameter"
+#include <util/compiler_defs.h>
+CC_DIAGNOSTIC_PUSH()
+CC_DIAGNOSTIC_IGNORE_LLVM_CHECKS()
 #include <clang/Frontend/ASTUnit.h>
-#pragma GCC diagnostic pop
+CC_DIAGNOSTIC_POP()
 
 #include <AST/build_ast.h>
 #include <ansi-c/c_preprocess.h>
@@ -398,6 +398,9 @@ int __ESBMC_builtin_constant_p(int);
     __typeof__(*__atomic_store_ptr) __atomic_store_tmp = (VAL);                \
     __ESBMC_atomic_store(__atomic_store_ptr, &__atomic_store_tmp, (MO));       \
   })
+
+// TODO: implement this similarly to printf
+  #define fscanf __ESBMC_fscanf
     )";
 
   return intrinsics;
