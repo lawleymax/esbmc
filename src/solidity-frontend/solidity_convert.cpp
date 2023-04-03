@@ -472,7 +472,7 @@ bool solidity_convertert::get_function_definition(
 
   if(ast_node["kind"] == "constructor")
   {
-    name = current_functionName;
+    name = contractName;
     id = contractName;
   }
 
@@ -611,11 +611,9 @@ bool solidity_convertert::get_constructor_call(
   symbolt s = *context.find_symbol(id);
   typet type = s.type;
 
-  std::cout << s << std::endl;
-
   // TODO: populate function params
   new_expr = exprt("symbol", type);
-  new_expr.identifier(id);
+  new_expr.identifier(name);
   new_expr.cmt_lvalue(true);
   new_expr.name(name);
 
@@ -623,14 +621,20 @@ bool solidity_convertert::get_constructor_call(
   call.function() = new_expr;
   call.type() = type;
 
+  std::cout << ast_node << std::endl;
+
   unsigned num_args = 0;
-  if(expr.contains("arguments"))
+  if(ast_node.contains("arguments"))
   {
-    for(const auto &arg : expr["arguments"].items())
+    for(const auto &arg : ast_node["arguments"])
     {
+      std::cout << arg << std::endl;
       exprt single_arg;
-      if(get_expr(arg.value(), single_arg))
+      std::cout << arg["typeDescriptions"] << std::endl;
+      if(get_expr(arg, arg["typeDescriptions"], single_arg))
         return true;
+
+      std::cout << single_arg << std::endl;
 
       call.arguments().push_back(single_arg);
       ++num_args;
@@ -639,8 +643,6 @@ bool solidity_convertert::get_constructor_call(
 
   call.set("constructor", 1);
   new_expr.swap(call);
-
-  std::cout << new_expr << std::endl;
   return false;
 }
 
@@ -1158,7 +1160,6 @@ bool solidity_convertert::get_expr(
     tmp_obj.location() = new_expr.location();
 
     new_expr.swap(tmp_obj);
-
     break;
   }
   default:
@@ -1881,6 +1882,9 @@ bool solidity_convertert::get_elementary_type_name(
   }
   case SolidityGrammar::ElementaryTypeNameT::INT_LITERAL:
   {
+    new_type = uint_type();
+    c_type = "uint";
+    new_type.set("cpp_type", c_type);
     break;
   }
   case SolidityGrammar::ElementaryTypeNameT::BOOL:
